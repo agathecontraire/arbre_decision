@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Éditeur arbre JSON SENORIF</title>
+<style>
+body{margin:0;font-family:Arial,sans-serif;background:#f5f7fb;color:#111}
+header{padding:10px;background:white;border-bottom:1px solid #ddd;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button{padding:8px 10px;border:1px solid #ccc;border-radius:8px;background:white;font-weight:700;cursor:pointer}
+button.primary{background:#2563eb;color:white}
+.main{display:grid;grid-template-columns:300px 1fr 330px;height:calc(100vh - 58px)}
+.panel{background:white;padding:12px;border-right:1px solid #ddd;overflow:auto}
+.panel.right{border-left:1px solid #ddd;border-right:0}
+#canvas{position:relative;overflow:scroll;cursor:grab;background-image:linear-gradient(#e5e7eb 1px,transparent 1px),linear-gradient(90deg,#e5e7eb 1px,transparent 1px);background-size:24px 24px}
+#world{position:relative;width:6000px;height:4000px;transform-origin:0 0}
+.node{position:absolute;width:240px;min-height:76px;border:2px solid #2563eb;background:#eff6ff;border-radius:12px;padding:10px;box-shadow:0 3px 10px #0002;cursor:pointer;user-select:none}
+.node.result{border-color:#16a34a;background:#ecfdf5}
+.node.selected{outline:4px solid #fbbf24}
+.type{font-size:11px;font-weight:bold;color:#555;margin-bottom:5px}
+.title{font-weight:bold;font-size:13px;white-space:pre-wrap}
+.small{font-size:12px;color:#555;margin-top:5px}
+.edge{position:absolute;height:2px;background:#777;transform-origin:left center}
+.label{position:absolute;background:white;border:1px solid #ccc;border-radius:999px;padding:3px 8px;font-size:12px;font-weight:bold;cursor:pointer;max-width:220px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+textarea,input,select{width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:8px;padding:8px;font-family:inherit}
+textarea{min-height:90px}
+.json{font-family:monospace;font-size:12px;min-height:220px}
+label{font-size:13px;font-weight:bold;margin-top:10px;display:block}
+.help{font-size:12px;color:#555;line-height:1.35}
+.zoomBox{display:flex;gap:6px;align-items:center}
+#zoomValue{font-size:13px;font-weight:700;min-width:48px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+<strong>Éditeur arbre JSON SENORIF</strong>
+<button onclick="addQuestion()">+ Question</button>
+<button onclick="addResult()">+ Résultat</button>
+<button onclick="toggleConnect()">Relier deux nœuds</button>
+<button class="primary" onclick="exportJSON()">Exporter JSON</button>
+<button onclick="loadExample()">Charger exemple</button>
+<button onclick="saveLocal()">Sauver local</button>
+<button onclick="loadLocal()">Recharger local</button>
+<span class="zoomBox">
+  <button onclick="zoomOut()">−</button>
+  <input id="zoomSlider" type="range" min="20" max="140" value="100" oninput="setZoom(this.value/100)" style="width:130px">
+  <button onclick="zoomIn()">+</button>
+  <span id="zoomValue">100%</span>
+  <button onclick="fitView()">Tout voir</button>
+</span>
+</header>
+
+<div class="main">
+<div class="panel">
+<p class="help">
+<b>Mode d'emploi :</b><br>
+1. Clique sur un nœud pour le modifier.<br>
+2. Glisse un nœud pour le déplacer.<br>
+3. Pour relier : bouton “Relier”, puis clique parent puis enfant.<br>
+4. Utilise les barres de défilement, le zoom, ou clique-glisse sur le fond pour te déplacer dans les gros arbres.
+</p>
+
+<label>Importer fichier JSON</label>
+<input type="file" id="fileInput" accept=".json">
+
+<label>Ou coller JSON</label>
+<textarea id="pasteBox" class="json"></textarea>
+<button onclick="importPasted()">Importer JSON collé</button>
+
+<h3>Nœuds</h3>
+<div id="list"></div>
+</div>
+
+<div id="canvas">
+<div id="world"></div>
+</div>
+
+<div class="panel right">
+<h3>Édition</h3>
+<div id="editEmpty">Clique sur un nœud ou une branche.</div>
+
+<div id="nodeEdit" style="display:none">
+<label>Type</label>
+<select id="editType" onchange="updateNode()">
+<option value="question">question</option>
+<option value="resultat">resultat</option>
+</select>
+
+<label>Question / titre</label>
+<textarea id="editTitle" oninput="updateNode()"></textarea>
+
+<label>Données résultat JSON</label>
+<textarea id="editData" class="json" onchange="updateNodeData()"></textarea>
+
+<label>Source SENORIF</label>
+<input id="editSource" oninput="updateNode()">
+
+<button onclick="deleteNode()" style="margin-top:8px;color:#b91c1c">Supprimer ce nœud</button>
+</div>
+
+<div id="edgeEdit" style="display:none">
+<label>Réponse / branche</label>
+<input id="editEdgeLabel" oninput="updateEdge()">
+<button onclick="deleteEdge()" style="margin-top:8px;color:#b91c1c">Supprimer branche</button>
+</div>
+
+<h3>Aperçu JSON</h3>
+<textarea id="preview" class="json" readonly></textarea>
+</div>
+</div>
+
+<script>
+let nodes=[], edges=[];
+let selectedNode=null, selectedEdge=null;
+let connectMode=false, connectSource=null;
+let drag=null;
+let pan=null;
+let zoom=1;
+
+const NODE_W=240;
+const NODE_H=96;
+const X_GAP=80;
+const Y_GAP=190;
+
+function example(){
+ return {
+  type:"question",
+  titre:"Type de cancer ?",
+  choix:{
+   "Triple négatif":{type:"resultat",donnees:{"Chimiothérapie":"1"},infos_science:{},source_senorif:"Exemple"},
+   "HER2+":{type:"resultat",donnees:{"Chimiothérapie + anti-HER2":"1"},infos_science:{},source_senorif:"Exemple"},
+   "RH+/HER2-":{
+    type:"question",
+    titre:"Patiente ménopausée ?",
+    choix:{
+     "Oui":{type:"resultat",donnees:{"Hormonothérapie":"1"},infos_science:{},source_senorif:"Exemple"},
+     "Non":{type:"resultat",donnees:{"Hormonothérapie + chimiothérapie":"1"},infos_science:{},source_senorif:"Exemple"}
+    },
+    source_senorif:"Exemple"
+   }
+  },
+  source_senorif:"Exemple"
+ };
+}
+
+function uid(p){return p+Math.random().toString(36).slice(2,9)}
+function node(id){return nodes.find(n=>n.id===id)}
+function edge(id){return edges.find(e=>e.id===id)}
+
+function countLeaves(t){
+ if(!t || t.type==="resultat" || !t.choix || !Object.keys(t.choix).length) return 1;
+ return Object.values(t.choix).reduce((sum,child)=>sum+countLeaves(child),0);
+}
+
+function treeToGraph(tree){
+ nodes=[]; edges=[];
+ let count=1;
+ let cursorX=300;
+
+ function walk(t, depth, parent, label){
+  let myLeaves=countLeaves(t);
+  let children=t && t.type==="question" && t.choix ? Object.entries(t.choix) : [];
+  let id="n"+count++;
+  let x, y=80+depth*Y_GAP;
+
+  if(children.length===0){
+    x=cursorX;
+    cursorX += NODE_W + X_GAP;
+  } else {
+    let childIds=[];
+    children.forEach(([lab,child])=>{
+      childIds.push(walk(child, depth+1, id, lab));
+    });
+    let childNodes=childIds.map(id=>node(id));
+    x=(Math.min(...childNodes.map(n=>n.x))+Math.max(...childNodes.map(n=>n.x)))/2;
+  }
+
+  nodes.push({
+    id:id,
+    type:t.type||"question",
+    titre:t.titre||"",
+    donnees:t.donnees||{},
+    infos_science:t.infos_science||{},
+    source_senorif:t.source_senorif || (t.infos_science && t.infos_science.source) || "",
+    x:x,
+    y:y
+  });
+
+  if(parent) edges.push({id:uid("e"),source:parent,target:id,label:label||"Réponse"});
+  return id;
+ }
+
+ walk(tree,0,null,"");
+
+ // Comme les enfants sont créés avant le parent, on recentre verticalement proprement et on remet la racine au-dessus.
+ nodes.sort((a,b)=>{
+   let na=parseInt(a.id.slice(1),10), nb=parseInt(b.id.slice(1),10);
+   return na-nb;
+ });
+
+ resizeWorld();
+ render();
+ setTimeout(fitView, 50);
+}
+
+function graphToTree(){
+ let targets=new Set(edges.map(e=>e.target));
+ let root=nodes.find(n=>!targets.has(n.id))||nodes[0];
+ function build(n){
+  if(!n) return {};
+  if(n.type==="resultat") return {
+    type:"resultat",
+    donnees:n.donnees||{},
+    infos_science:n.infos_science||{},
+    source_senorif:n.source_senorif||""
+  };
+  let choix={};
+  edges.filter(e=>e.source===n.id).forEach(e=>{
+   let child=node(e.target);
+   if(child) choix[e.label||"Réponse"]=build(child);
+  });
+  return {
+    type:"question",
+    titre:n.titre||"Question sans titre",
+    choix:choix,
+    infos_science:n.infos_science||{},
+    source_senorif:n.source_senorif||""
+  };
+ }
+ return build(root);
+}
+
+function resizeWorld(){
+ let w=document.getElementById("world");
+ if(!nodes.length){w.style.width="2500px"; w.style.height="1800px"; return;}
+ let maxX=Math.max(...nodes.map(n=>n.x))+700;
+ let maxY=Math.max(...nodes.map(n=>n.y))+500;
+ w.style.width=Math.max(2500,maxX)+"px";
+ w.style.height=Math.max(1800,maxY)+"px";
+}
+
+function render(){
+ resizeWorld();
+ let w=document.getElementById("world");
+ w.innerHTML="";
+ edges.forEach(renderEdge);
+ nodes.forEach(renderNode);
+ renderList();
+ renderEditor();
+ document.getElementById("preview").value=JSON.stringify(graphToTree(),null,2);
+}
+
+function renderNode(n){
+ let w=document.getElementById("world");
+ let el=document.createElement("div");
+ el.className="node "+(n.type==="resultat"?"result ":"")+(selectedNode===n.id?"selected":"");
+ el.style.left=n.x+"px"; el.style.top=n.y+"px";
+ el.innerHTML="<div class='type'>"+n.type+"</div><div class='title'>"+esc(n.type==="resultat"?"Résultat":n.titre)+"</div><div class='small'>"+esc(summary(n))+"</div>";
+ el.onpointerdown=function(ev){
+  ev.preventDefault();
+  if(connectMode){connectClick(n.id);return}
+  selectedNode=n.id; selectedEdge=null;
+  drag={id:n.id,sx:ev.clientX,sy:ev.clientY,ox:n.x,oy:n.y};
+  render();
+ };
+ w.appendChild(el);
+}
+
+document.addEventListener("pointermove",function(ev){
+ if(!drag)return;
+ let n=node(drag.id);
+ n.x=drag.ox+(ev.clientX-drag.sx)/zoom;
+ n.y=drag.oy+(ev.clientY-drag.sy)/zoom;
+ render();
+});
+document.addEventListener("pointerup",()=>{
+ drag=null;
+ pan=null;
+ document.getElementById("canvas").style.cursor="grab";
+});
+
+document.getElementById("canvas").addEventListener("pointerdown",function(ev){
+ if(ev.target.id!=="canvas" && ev.target.id!=="world") return;
+ pan={
+   sx:ev.clientX,
+   sy:ev.clientY,
+   sl:this.scrollLeft,
+   st:this.scrollTop
+ };
+ this.style.cursor="grabbing";
+ ev.preventDefault();
+});
+
+document.getElementById("canvas").addEventListener("pointermove",function(ev){
+ if(!pan) return;
+ this.scrollLeft=pan.sl-(ev.clientX-pan.sx);
+ this.scrollTop=pan.st-(ev.clientY-pan.sy);
+});
+
+document.getElementById("canvas").addEventListener("pointerleave",function(){
+ pan=null;
+ this.style.cursor="grab";
+});
+
+function renderEdge(e){
+ let s=node(e.source), t=node(e.target);
+ if(!s||!t)return;
+ let w=document.getElementById("world");
+ let x1=s.x+NODE_W/2,y1=s.y+NODE_H,x2=t.x+NODE_W/2,y2=t.y;
+ let dx=x2-x1,dy=y2-y1,len=Math.sqrt(dx*dx+dy*dy),ang=Math.atan2(dy,dx)*180/Math.PI;
+ let line=document.createElement("div");
+ line.className="edge"; line.style.left=x1+"px"; line.style.top=y1+"px"; line.style.width=len+"px"; line.style.transform="rotate("+ang+"deg)";
+ w.appendChild(line);
+ let lab=document.createElement("div");
+ lab.className="label"; lab.style.left=((x1+x2)/2-40)+"px"; lab.style.top=((y1+y2)/2-10)+"px"; lab.textContent=e.label||"Réponse";
+ lab.onclick=function(){selectedEdge=e.id;selectedNode=null;render()};
+ w.appendChild(lab);
+}
+
+function summary(n){
+ if(n.type==="resultat"){let k=Object.keys(n.donnees||{});return k.length?k.slice(0,3).join(", "):"(vide)"}
+ let out=edges.filter(e=>e.source===n.id);return out.length?out.map(e=>e.label).join(" / "):"(aucune réponse)"
+}
+
+function renderList(){
+ let list=document.getElementById("list"); list.innerHTML="";
+ nodes.forEach(n=>{
+  let d=document.createElement("div");
+  d.style.padding="6px"; d.style.borderBottom="1px solid #eee"; d.textContent=n.type+" — "+(n.type==="resultat"?summary(n):n.titre);
+  d.onclick=()=>{selectedNode=n.id;selectedEdge=null;centerOnNode(n.id);render()};
+  list.appendChild(d);
+ });
+}
+
+function renderEditor(){
+ let n=node(selectedNode), e=edge(selectedEdge);
+ document.getElementById("editEmpty").style.display=n||e?"none":"block";
+ document.getElementById("nodeEdit").style.display=n?"block":"none";
+ document.getElementById("edgeEdit").style.display=e?"block":"none";
+ if(n){
+  document.getElementById("editType").value=n.type;
+  document.getElementById("editTitle").value=n.titre||"";
+  document.getElementById("editData").value=JSON.stringify(n.donnees||{},null,2);
+  document.getElementById("editSource").value=n.source_senorif||"";
+ }
+ if(e) document.getElementById("editEdgeLabel").value=e.label||"";
+}
+
+function updateNode(){
+ let n=node(selectedNode);if(!n)return;
+ n.type=document.getElementById("editType").value;
+ n.titre=document.getElementById("editTitle").value;
+ n.source_senorif=document.getElementById("editSource").value;
+ render()
+}
+function updateNodeData(){let n=node(selectedNode);if(!n)return;try{n.donnees=JSON.parse(document.getElementById("editData").value||"{}");render()}catch(err){alert("JSON données invalide: "+err.message)}}
+function updateEdge(){let e=edge(selectedEdge);if(!e)return;e.label=document.getElementById("editEdgeLabel").value;render()}
+
+function addQuestion(){nodes.push({id:uid("n"),type:"question",titre:"Nouvelle question",donnees:{},infos_science:{},source_senorif:"",x:120,y:120});render()}
+function addResult(){nodes.push({id:uid("n"),type:"resultat",titre:"",donnees:{"Traitement":"1"},infos_science:{},source_senorif:"",x:160,y:300});render()}
+function deleteNode(){if(!selectedNode)return;nodes=nodes.filter(n=>n.id!==selectedNode);edges=edges.filter(e=>e.source!==selectedNode&&e.target!==selectedNode);selectedNode=null;render()}
+function deleteEdge(){if(!selectedEdge)return;edges=edges.filter(e=>e.id!==selectedEdge);selectedEdge=null;render()}
+function toggleConnect(){connectMode=!connectMode;connectSource=null;alert(connectMode?"Clique le parent puis l'enfant":"Mode liaison désactivé")}
+function connectClick(id){if(!connectSource){connectSource=id;return}else{edges.push({id:uid("e"),source:connectSource,target:id,label:"Réponse"});connectSource=null;connectMode=false;render()}}
+
+function importPasted(){try{treeToGraph(JSON.parse(document.getElementById("pasteBox").value))}catch(e){alert("JSON invalide: "+e.message)}}
+document.getElementById("fileInput").addEventListener("change",function(ev){
+ let f=ev.target.files[0]; if(!f)return;
+ let r=new FileReader();
+ r.onload=()=>{try{treeToGraph(JSON.parse(r.result))}catch(e){alert("JSON invalide: "+e.message)}};
+ r.readAsText(f);
+});
+
+function exportJSON(){let txt=JSON.stringify(graphToTree(),null,2);let blob=new Blob([txt],{type:"application/json"});let a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="arbre_decision.json";a.click();}
+function saveLocal(){localStorage.setItem("arbre_senorif_editor",JSON.stringify({nodes,edges}));alert("Sauvegardé")}
+function loadLocal(){let s=localStorage.getItem("arbre_senorif_editor");if(!s)return alert("Pas de sauvegarde");let o=JSON.parse(s);nodes=o.nodes;edges=o.edges;render();setTimeout(fitView,50)}
+function loadExample(){treeToGraph(example())}
+
+function setZoom(z){
+ zoom=Math.max(0.2,Math.min(1.4,z));
+ document.getElementById("world").style.transform="scale("+zoom+")";
+ document.getElementById("zoomSlider").value=Math.round(zoom*100);
+ document.getElementById("zoomValue").textContent=Math.round(zoom*100)+"%";
+}
+function zoomIn(){setZoom(zoom+0.1)}
+function zoomOut(){setZoom(zoom-0.1)}
+
+function fitView(){
+ if(!nodes.length)return;
+ let canvas=document.getElementById("canvas");
+ let minX=Math.min(...nodes.map(n=>n.x));
+ let maxX=Math.max(...nodes.map(n=>n.x+NODE_W));
+ let minY=Math.min(...nodes.map(n=>n.y));
+ let maxY=Math.max(...nodes.map(n=>n.y+NODE_H));
+ let treeW=maxX-minX+300;
+ let treeH=maxY-minY+300;
+ let z=Math.min(canvas.clientWidth/treeW, canvas.clientHeight/treeH, 1);
+ setZoom(Math.max(0.2,z));
+ canvas.scrollLeft=Math.max(0,(minX-150)*zoom);
+ canvas.scrollTop=Math.max(0,(minY-120)*zoom);
+}
+
+function centerOnNode(id){
+ let n=node(id); if(!n)return;
+ let canvas=document.getElementById("canvas");
+ canvas.scrollLeft=Math.max(0,(n.x-300)*zoom);
+ canvas.scrollTop=Math.max(0,(n.y-200)*zoom);
+}
+
+function esc(s){return String(s||"").replace(/[&<>"']/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[m]))}
+
+loadExample();
+</script>
+</body>
+</html>
